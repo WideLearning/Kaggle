@@ -2,10 +2,10 @@ import easyocr
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from matplotlib.cm import get_cmap
 from PIL import Image
 from scipy.optimize import linear_sum_assignment
 from torch import nn
-from matplotlib.cm import get_cmap
 
 
 def rgb_array():
@@ -17,85 +17,67 @@ def rgb_array():
     return result[:, :, :3].astype(np.uint8)
 
 
-def quantize(arr, s=100, k=4):
-    arr = torch.tensor(arr, dtype=float) / 255
-    assert 0 <= arr.min() and arr.max() <= 1
-    pool = nn.AdaptiveAvgPool2d(s)
-    arr = pool(arr.permute(2, 0, 1)).permute(1, 2, 0)
-    print(arr.shape)
-    arr = (k * arr).int()
-    _clusters, inverse = torch.unique(arr.view(-1, 3), dim=0, return_inverse=True)
-    return inverse.reshape(arr.shape[:-1]).numpy()
+def max_sum_segment(arr: np.array, dx: int = 0) -> tuple[int, int]:
+    """Returns the segment with the largest sum, shifted by dx.
+
+    Args:
+        arr (np.array): Given array.
+        dx (int): Index for the first element in arr. Default 0.
+
+    Returns:
+        tuple[int, int]: [l, r]
+    """
+    assert arr.ndim == 1
+    n = len(arr)
+    l, l_sum = 0, 0  # sum on [0, l - 1]
+    lr, lr_sum = (dx, dx), 0
+    r_sum = 0  # sum on [0, r]
+    for r in range(n):
+        r_sum += arr[r]
+        if l_sum > r_sum:
+            l, l_sum = r + 1, r_sum
+        if lr_sum < r_sum - l_sum:
+            lr, lr_sum = (l + dx, r + dx), r_sum - l_sum
+    return lr
 
 
-def matching(a, b, removal_cost=0.5):
-    n, m = len(a), len(b)
-    dist = np.linalg.norm(a.reshape(n, 1, 2) - b.reshape(1, m, 2), axis=-1)
-    assert dist.shape == (n, m)
-    row_ind, col_ind = linear_sum_assignment(dist)
-    cost = dist[row_ind, col_ind].sum()
-    # for i, j in zip(row_ind, col_ind):
-    #     ay, ax = a[i]
-    #     by, bx = b[j]
-    #     plt.plot([ax, bx], [ay, by], lw=1)
-    # plt.show()
-    # add all these lines together
-    return cost + abs(n - m) * removal_cost
+# x = np.arange(10)
+# y = np.random.randn(*x.shape)
+# plt.plot(x, y)
+# plt.title(
+#     "The quick brown fox jumps over the lazy dog",
+#     fontfamily="serif",
+#     fontsize=14,
+#     fontstyle="italic",
+# )
+# arr = rgb_array()
+with Image.open("rotated.jpg") as im:
+    arr = np.asarray(im)
+print(arr.shape)
+
+rectangles = []
 
 
-def EMD(x, y):
-    def where(pic, col):
-        return np.argwhere(pic == col) / pic.shape
+def split_rec(ly, ry, lx, rx, min_size=3, min_split=2, splitting_reward=0.2):
+    if min(rx - lx, ry - ly) < min_size:
+        return
+    s = arr[ly:ry, lx:rx].std(axis=1).mean(axis=-1)
+    syl, syr = max_sum_segment(splitting_reward * s.mean() - s, dx=ly)
+    s = arr[ly:ry, lx:rx].std(axis=0).mean(axis=-1)
+    sxl, sxr = max_sum_segment(splitting_reward * s.mean() - s, dx=lx)
+    if sxr - sxl > max(syr - syl, min_split):
+        split_rec(ly, ry, lx, sxl)
+        split_rec(ly, ry, sxr, rx)
+    elif syr - syl > min_split:
+        split_rec(ly, syl, lx, rx)
+        split_rec(syr, ry, lx, rx)
+    else:
+        rectangles.append((lx, rx, ly, ry))
 
-    return sum(
-        matching(where(x, c), where(y, c)) for c in range(max(x.max(), y.max()) + 1)
-    )
 
-
-x = np.arange(10)
-y = np.random.randn(*x.shape)
-plt.plot(x, y)
-plt.title(
-    "The quick brown fox jumps over the lazy dog",
-    fontfamily="serif",
-    fontsize=14,
-    fontstyle="italic",
-)
-first = rgb_array()
-first = quantize(first)
-
-y += 5 * np.random.randn(*x.shape)
-plt.plot(x, y)
-plt.title(
-    "The quick brown fox jumps over the lazy dog",
-    fontfamily="serif",
-    fontsize=15,
-    fontstyle="italic",
-)
-second = rgb_array()
-# second = quantize(second)
-
-# plt.imshow(second)
-# plt.show()
-
-# print(EMD(first, second))
-
-vertical = second.std(axis=1).mean(axis=-1)
-horizontal = second.std(axis=0).mean(axis=-1)
-plt.plot(horizontal)
+split_rec(0, arr.shape[0], 0, arr.shape[1])
+print(len(rectangles))
+for lx, rx, ly, ry in rectangles:
+    plt.plot([lx, lx, rx, rx, lx], [ly, ry, ry, ly, ly], c="r")
+plt.imshow(arr)
 plt.show()
-# zero segments
-
-# reader = easyocr.Reader(["en"]) 
-# result = reader.readtext(second, min_size=1, text_threshold=0.1, low_text=0.1, link_threshold=0.1)
-# cmap = get_cmap("rainbow")
-# plt.imshow(second)
-# for rect, text, score in result:
-#     rect = np.array(rect)
-#     # rect[:, 1] = second.shape[1] - rect[:, 1]
-#     plt.plot(*zip(*rect, rect[0]), c=cmap(score))
-#     x = rect[:, 0].min() * 0.9 + rect[:, 0].max() * 0.1
-#     y = rect[:, 1].min() * 0.5 + rect[:, 1].max() * 0.5
-#     # plt.text(s=f"{text}", x=x, y=y, fontsize=10)
-# plt.show()
-# print(result)
